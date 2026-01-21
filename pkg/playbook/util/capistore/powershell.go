@@ -36,6 +36,8 @@ var (
 	installCertScript string
 	//go:embed embedded/retrieve-cert.ps1
 	retrieveCertScript string
+	//go:embed embedded/set-friendly-name.ps1
+	setFriendlyNameScript string
 )
 
 // PowerShell represents the powershell program in Windows. It is used to execute any script on it
@@ -131,6 +133,41 @@ func (ps PowerShell) RetrieveCertificateFromCAPI(config InstallationConfig) (str
 	}
 
 	return stdout, nil
+}
+
+// SetCertificateFriendlyName sets the friendly name on a certificate identified by thumbprint.
+// This is needed for TPM enrollment where certtostore does not support setting FriendlyName directly.
+func (ps PowerShell) SetCertificateFriendlyName(config InstallationConfig, thumbprint string) error {
+	zap.L().Info("setting certificate friendly name", zap.String("thumbprint", thumbprint), zap.String("friendlyName", config.FriendlyName))
+
+	// verify friendly name doesn't have command injection
+	err := containsInjectableData(config.FriendlyName)
+	if err != nil {
+		m := "failed to set friendly name because of invalid characters in friendlyName"
+		zap.L().Error(m)
+		return errors.WithMessagef(err, m)
+	}
+
+	params := map[string]string{
+		"thumbprint":    thumbprint,
+		"friendlyName":  config.FriendlyName,
+		"storeName":     config.StoreName,
+		"storeLocation": config.StoreLocation,
+	}
+
+	stdout, err := ps.executeScript(setFriendlyNameScript, "set-friendly-name", params)
+	if err != nil {
+		m := "failed to set certificate friendly name"
+		zap.L().Error(m, zap.String("stdout", stdout), zap.Error(err))
+		return errors.WithMessagef(err, "%s, stdout: '%s'", m, stdout)
+	}
+
+	// Check if certificate was not found
+	if strings.Contains(stdout, "certificate not found") {
+		return fmt.Errorf("certificate not found by thumbprint: %s", thumbprint)
+	}
+
+	return nil
 }
 
 // ExecuteScript runs the specified powershell script function found within the script.

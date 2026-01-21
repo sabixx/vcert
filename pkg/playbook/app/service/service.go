@@ -27,6 +27,7 @@ import (
 	"github.com/Venafi/vcert/v5/pkg/playbook/app/domain"
 	"github.com/Venafi/vcert/v5/pkg/playbook/app/installer"
 	"github.com/Venafi/vcert/v5/pkg/playbook/app/vcertutil"
+	"github.com/Venafi/vcert/v5/pkg/playbook/util/capistore"
 	"github.com/Venafi/vcert/v5/pkg/venafi"
 )
 
@@ -59,8 +60,13 @@ func Execute(config domain.Config, task domain.CertificateTask) []error {
 	}
 	zap.L().Info("certificate needs action", zap.String("certificate", task.Request.Subject.CommonName))
 
-	// Ensure there is a keyPassword in the request when origin is service
+	// Check if this is a TPM enrollment with CAPI installation
 	csrOrigin := certificate.ParseCSROrigin(task.Request.CsrOrigin)
+	if shouldUseTPMEnrollment(csrOrigin, task.Installations) {
+		return executeWithTPM(config, task)
+	}
+
+	// Ensure there is a keyPassword in the request when origin is service
 	if csrOrigin == certificate.ServiceGeneratedCSR {
 		zap.L().Info("csr option is 'service'. Generating random password for certificate request")
 		task.Request.KeyPassword = vcertutil.GeneratePassword()
@@ -106,6 +112,164 @@ func Execute(config domain.Config, task domain.CertificateTask) []error {
 	}
 	return errorList
 
+}
+
+// shouldUseTPMEnrollment checks if the task should use TPM enrollment
+// TPM enrollment requires a TPM CSR origin and at least one CAPI installation
+func shouldUseTPMEnrollment(csrOrigin certificate.CSrOriginOption, installations domain.Installations) bool {
+	// Only for TPM CSR origins
+	if csrOrigin != certificate.TPMGeneratedCSR && csrOrigin != certificate.TPMOptionalGeneratedCSR {
+		return false
+	}
+
+	// Check if there's a CAPI installation
+	for _, inst := range installations {
+		if inst.Type == domain.FormatCAPI {
+			return true
+		}
+	}
+
+	return false
+}
+
+// executeWithTPM handles certificate enrollment using TPM-backed keys for CAPI installations
+func executeWithTPM(config domain.Config, task domain.CertificateTask) []error {
+	zap.L().Info("using TPM-backed certificate enrollment",
+		zap.String("certificate", task.Request.Subject.CommonName))
+
+	// Find the CAPI installation to use for TPM enrollment
+	var capiInstallation *domain.Installation
+	var otherInstallations []domain.Installation
+
+	for i := range task.Installations {
+		if task.Installations[i].Type == domain.FormatCAPI {
+			if capiInstallation == nil {
+				capiInstallation = &task.Installations[i]
+			} else {
+				// Additional CAPI installations - will need to be handled separately
+				otherInstallations = append(otherInstallations, task.Installations[i])
+			}
+		} else {
+			// Non-CAPI installations cannot use TPM-backed keys (keys are non-exportable)
+			zap.L().Warn("skipping non-CAPI installation for TPM enrollment (TPM keys are non-exportable)",
+				zap.String("format", task.Installations[i].Type.String()),
+				zap.String("file", task.Installations[i].File))
+		}
+	}
+
+	if capiInstallation == nil {
+		return []error{fmt.Errorf("TPM enrollment requires CAPI installation format")}
+	}
+
+	// Get CAPI location
+	capiLocation := capiInstallation.CAPILocation
+	if capiLocation == "" {
+		capiLocation = capiInstallation.Location //nolint:staticcheck
+	}
+
+	// Determine if TPM is optional (tpm_optional allows fallback to software)
+	csrOrigin := certificate.ParseCSROrigin(task.Request.CsrOrigin)
+	isOptional := csrOrigin == certificate.TPMOptionalGeneratedCSR
+
+	// Enroll certificate with TPM (or software fallback if isOptional and TPM unavailable)
+	cert, err := vcertutil.EnrollCertificateWithTPM(config, task.Request, capiLocation, isOptional)
+	if err != nil {
+		return []error{fmt.Errorf("error enrolling certificate with TPM %s: %w", task.Name, err)}
+	}
+
+	zap.L().Info("successfully enrolled certificate with TPM-backed key",
+		zap.String("certificate", task.Request.Subject.CommonName),
+		zap.String("capiLocation", capiLocation))
+
+	// Set FriendlyName on the certificate so Check() can find it later
+	// certtostore doesn't support setting FriendlyName, so we do it via PowerShell
+	friendlyName := capiInstallation.CAPIFriendlyName
+	if friendlyName == "" {
+		friendlyName = task.Request.Subject.CommonName
+	}
+
+	tpmCert, err := installer.CreateCertificateFromX509(cert)
+	if err != nil {
+		zap.L().Warn("failed to get certificate thumbprint for FriendlyName", zap.Error(err))
+	} else {
+		// Parse CAPI location to get store details
+		storeLocation := "LocalMachine"
+		storeName := "My"
+		parts := strings.Split(capiLocation, "\\")
+		if len(parts) == 2 {
+			storeLocation = parts[0]
+			storeName = parts[1]
+		}
+
+		instConfig := capistore.InstallationConfig{
+			FriendlyName:  friendlyName,
+			StoreName:     storeName,
+			StoreLocation: storeLocation,
+		}
+
+		ps := capistore.NewPowerShell()
+		if err := ps.SetCertificateFriendlyName(instConfig, strings.ToUpper(tpmCert.Thumbprint)); err != nil {
+			zap.L().Warn("failed to set certificate FriendlyName - Check() may not find the certificate",
+				zap.String("friendlyName", friendlyName),
+				zap.Error(err))
+		} else {
+			zap.L().Info("successfully set certificate FriendlyName",
+				zap.String("friendlyName", friendlyName))
+		}
+	}
+
+	// Run after-install actions for the CAPI installation if configured
+	if capiInstallation.AfterAction != "" {
+		instlr := installer.GetInstaller(*capiInstallation)
+		result, err := instlr.AfterInstallActions()
+		if err != nil {
+			zap.L().Error("error running after-install actions",
+				zap.String("location", capiLocation),
+				zap.Error(err))
+		} else if strings.TrimSpace(result) == "1" {
+			zap.L().Warn("after-install actions returned failure status")
+		} else {
+			zap.L().Info("successfully executed after-install actions")
+		}
+	}
+
+	// Run install validation if configured
+	if capiInstallation.InstallValidation != "" {
+		instlr := installer.GetInstaller(*capiInstallation)
+		result, err := instlr.InstallValidationActions()
+		if err != nil {
+			zap.L().Error("error running installation validation",
+				zap.String("location", capiLocation),
+				zap.Error(err))
+		} else if strings.TrimSpace(result) == "1" {
+			zap.L().Warn("installation validation returned failure status")
+		} else {
+			zap.L().Info("successfully executed installation validation")
+		}
+	}
+
+	// Handle additional CAPI installations (if any)
+	// Note: These would need a different approach as the key is bound to the first store
+	if len(otherInstallations) > 0 {
+		zap.L().Warn("additional CAPI installations detected but TPM-backed key can only be stored once",
+			zap.Int("additionalInstallations", len(otherInstallations)))
+	}
+
+	// Set environment variables if requested
+	if task.SetEnvVars != nil {
+		zap.L().Debug("setting environment variables for TPM-backed certificate")
+		// For TPM-backed certs, we create a Certificate struct with the cert and thumbprint
+		tpmCert, err := installer.CreateCertificateFromX509(cert)
+		if err != nil {
+			zap.L().Warn("failed to create certificate struct for environment variables", zap.Error(err))
+		} else {
+			// Create minimal PEMCollection for base64 env var (will be empty for TPM certs)
+			pcc := &certificate.PEMCollection{}
+			setEnvVars(task, tpmCert, pcc)
+		}
+	}
+
+	return nil
 }
 
 func isCertificateChanged(config domain.Config, task domain.CertificateTask) (bool, error) {

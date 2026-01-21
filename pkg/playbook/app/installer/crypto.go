@@ -254,3 +254,17 @@ func CreateX509Cert(pcc *certificate.PEMCollection, certReq *certificate.Request
 
 	return &cert, preparedPcc, nil
 }
+
+// CreateCertificateFromX509 creates a Certificate struct from an x509.Certificate
+// This is for TPM-backed certificates where we do not have a PEM cert
+func CreateCertificateFromX509(x509Cert *x509.Certificate) (*Certificate, error) {
+	if x509Cert == nil {
+		return nil, fmt.Errorf("x509 certificate cannot be nil")
+	}
+	// nolint:gosec // Required for certificate thumbprint calculation (same as CreateX509Cert)
+	thumbprint := sha1.Sum(x509Cert.Raw)
+	hexThumbprint := hex.EncodeToString(thumbprint[:])
+
+	cert := Certificate{*x509Cert, hexThumbprint}
+	return &cert, nil
+}

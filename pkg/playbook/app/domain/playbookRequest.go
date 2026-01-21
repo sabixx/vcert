@@ -47,4 +47,5 @@ type PlaybookRequest struct {
 	ExtKeyUsages   certificate.ExtKeyUsageSlice `yaml:"eku,omitempty"`
 	ValidDays      string                       `yaml:"validDays,omitempty"`
 	Zone           string                       `yaml:"zone,omitempty"`
+	TPMConfig      TPMConfig                    `yaml:"tpmConfig,omitempty"`
 }

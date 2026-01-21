@@ -1,0 +1,55 @@
+# TPM-backed certificate example (Windows only)
+# This playbook demonstrates requesting a certificate with the private key
+# stored in the TPM 2.0 chip. The certificate will be installed in the
+# Windows CAPI store with the private key marked as non-exportable.
+#
+# Requirements:
+# - Windows operating system with TPM 2.0
+# - CAPI installation format (TPM keys cannot be exported to PEM, PKCS12, or JKS)
+#
+# Key constraints:
+# - RSA: Maximum 2048 bits on most TPM chips
+# - ECDSA: P-256 and P-384 curves supported
+# - ED25519: Not supported by TPM 2.0
+
+config:
+  connection:
+    platform: vaas
+    credentials:
+      apiKey: '{{ Env "TLSPC_APIKEY" }}'
+
+certificateTasks:
+  - name: TPM Certificate
+    renewBefore: 31d
+    request:
+      # Use 'tpm' to require TPM (fails if TPM unavailable)
+      # Use 'tpm_optional' to fall back to software if TPM unavailable
+      csr: tpm
+      keyType: RSA
+      keySize: 2048  # Maximum guaranteed size for TPM 2.0
+      subject:
+        commonName: '{{ Hostname | ToLower }}.example.com'
+        country: US
+        locality: Salt Lake City
+        state: Utah
+        organization: Example Corp
+      sanDNS:
+        - '{{ Hostname | ToLower }}.example.com'
+      zone: 'vcert\Default'
+
+      # TPM-specific configuration
+      tpmConfig:
+        # Set to true to allow fallback to 2048-bit RSA if TPM doesn't
+        # support larger key sizes. When false (default), requesting
+        # unsupported key sizes will fail with an error.
+        legacyKeySize: false
+
+    installations:
+      # TPM-backed certificates require CAPI installation format
+      - format: CAPI
+        capiLocation: LocalMachine\My
+        capiFriendlyName: TPM-Protected Certificate
+        # Note: TPM keys are inherently non-exportable, but setting this
+        # ensures the certificate is also marked as non-exportable
+        capiIsNonExportable: true
+        afterInstallAction: 'Write-Host "Certificate installed with TPM-backed key"'

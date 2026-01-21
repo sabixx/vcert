@@ -31,6 +31,10 @@ const (
 	ServiceGeneratedCSR
 	// UserProvidedCSR - client provides CSR from external resource and vcert library just check and send this CSR to server
 	UserProvidedCSR
+	// TPMGeneratedCSR - key pair is generated in TPM and CSR is signed by TPM-held key. Fails if TPM unavailable.
+	TPMGeneratedCSR
+	// TPMOptionalGeneratedCSR - uses TPM if available, falls back to LocalGeneratedCSR if TPM unavailable
+	TPMOptionalGeneratedCSR
 	UnknownCSR
 
 	// StrLocalGeneratedCSR is the string representations of the LocalGeneratedCSR constant
@@ -39,7 +43,11 @@ const (
 	StrServiceGeneratedCSR = "service"
 	// StrUserProvidedCSR is the string representations of the UserProvidedCSR constant
 	StrUserProvidedCSR = "file"
-	strUnknownCSR      = "unknown"
+	// StrTPMGeneratedCSR is the string representation of the TPMGeneratedCSR constant
+	StrTPMGeneratedCSR = "tpm"
+	// StrTPMOptionalGeneratedCSR is the string representation of the TPMOptionalGeneratedCSR constant
+	StrTPMOptionalGeneratedCSR = "tpm_optional"
+	strUnknownCSR              = "unknown"
 )
 
 // String returns a string representation of this object
@@ -51,6 +59,10 @@ func (csr *CSrOriginOption) String() string {
 		return StrServiceGeneratedCSR
 	case UserProvidedCSR:
 		return StrUserProvidedCSR
+	case TPMGeneratedCSR:
+		return StrTPMGeneratedCSR
+	case TPMOptionalGeneratedCSR:
+		return StrTPMOptionalGeneratedCSR
 	default:
 		return strUnknownCSR
 	}
@@ -65,6 +77,10 @@ func ParseCSROrigin(value string) CSrOriginOption {
 		return ServiceGeneratedCSR
 	case StrUserProvidedCSR:
 		return UserProvidedCSR
+	case StrTPMGeneratedCSR:
+		return TPMGeneratedCSR
+	case StrTPMOptionalGeneratedCSR:
+		return TPMOptionalGeneratedCSR
 	default:
 		return UnknownCSR
 	}

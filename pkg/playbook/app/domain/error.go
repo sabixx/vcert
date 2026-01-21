@@ -90,4 +90,19 @@ var (
 	ErrNoVCPTokenURL = fmt.Errorf("no tokenURL defined in credentials. tokenURL and externalJWT are both required to request an access token from  CyberArk Certificate Manager, SaaS when using an externalJWT")
 	// ErrAmbiguousVCPCreds is thrown when platform is CyberArk Certificate Manager, SaaS, and more than one type (apiKey, accessToken, or externalJWT) was provided
 	ErrAmbiguousVCPCreds = fmt.Errorf("unable to disambiguate multiple  CyberArk Certificate Manager, SaaS credentials. Only ONE of apiKey, accessToken, or tokenURL WITH externalJWT should be defined")
+
+	// TPM-related errors
+
+	// ErrTPMRequiresCAPI is thrown when TPM CSR origin is used without CAPI installation
+	ErrTPMRequiresCAPI = fmt.Errorf("csr: tpm requires CAPI installation format on Windows. TPM-backed private keys cannot be exported to PEM, PKCS12, or JKS formats")
+	// ErrTPMUnavailable is thrown when TPM is required but not available on the system
+	ErrTPMUnavailable = fmt.Errorf("TPM 2.0 device not available on this system")
+	// ErrTPMUnsupportedPlatform is thrown when TPM CSR origin is specified on an unsupported platform
+	ErrTPMUnsupportedPlatform = fmt.Errorf("TPM-backed certificates are only supported on Windows with CAPI installation")
+	// ErrTPMKeyTypeNotSupported is thrown when an unsupported key type is requested for TPM
+	ErrTPMKeyTypeNotSupported = fmt.Errorf("TPM does not support the requested key type. ED25519 is not supported by TPM 2.0")
+	// ErrTPMKeySizeNotSupported is thrown when an unsupported key size is requested for TPM
+	ErrTPMKeySizeNotSupported = fmt.Errorf("this TPM does not support the requested RSA key size. Try 2048 bits or set request.tpmConfig.legacyKeySize: true to automatically fall back")
+	// ErrTPMCurveNotSupported is thrown when an unsupported elliptic curve is requested for TPM
+	ErrTPMCurveNotSupported = fmt.Errorf("TPM does not support the requested elliptic curve.")
 )
