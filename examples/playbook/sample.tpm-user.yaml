@@ -1,11 +1,20 @@
-# TPM-backed certificate in LocalMachine store (Windows, requires admin)
+# TPM-backed certificate in CurrentUser store (Windows, no admin required)
 #
 # This playbook demonstrates requesting a certificate with the private key
-# stored in the TPM 2.0 chip, installed in the LocalMachine certificate store.
+# stored in the TPM 2.0 chip, installed in the CurrentUser certificate store.
+#
+# Use Case:
+# - User-level applications that need TPM-protected certificates
+# - Running vcert without administrator privileges
+# - Per-user certificate management
+#
+# Note: LocalMachine store (sample.tpm.yaml) requires admin privileges,
+# but CurrentUser store does NOT require admin privileges.
 #
 # Requirements:
 # - Windows operating system with TPM 2.0
 # - CAPI installation format (TPM keys cannot be exported to PEM, PKCS12, or JKS)
+# - No administrator privileges required for CurrentUser store
 #
 # Key constraints:
 # - RSA: Maximum 2048 bits on most TPM chips
@@ -19,7 +28,7 @@ config:
       apiKey: '{{ Env "TLSPC_APIKEY" }}'
 
 certificateTasks:
-  - name: TPM Certificate
+  - name: TPM User Certificate
     renewBefore: 31d
     request:
       # Use 'tpm' to require TPM (fails if TPM unavailable)
@@ -28,13 +37,13 @@ certificateTasks:
       keyType: RSA
       keySize: 2048  # Maximum guaranteed size for TPM 2.0
       subject:
-        commonName: '{{ Hostname | ToLower }}.example.com'
+        commonName: '{{ Env "USERNAME" }}-{{ Hostname | ToLower }}.example.com'
         country: US
         locality: Salt Lake City
         state: Utah
         organization: Example Corp
       sanDNS:
-        - '{{ Hostname | ToLower }}.example.com'
+        - '{{ Env "USERNAME" }}-{{ Hostname | ToLower }}.example.com'
       zone: 'vcert\Default'
 
       # TPM-specific configuration
@@ -45,10 +54,9 @@ certificateTasks:
         legacyKeySize: false
 
     installations:
-      # LocalMachine store - requires admin privileges
-      # For non-admin use, see sample.tpm-user.yaml (CurrentUser store)
+      # CurrentUser store - does NOT require admin privileges
       # Note: TPM keys are inherently non-exportable
       - format: CAPI
-        capiLocation: LocalMachine\My
-        capiFriendlyName: TPM-Protected Certificate
-        afterInstallAction: 'Write-Host "Certificate installed with TPM-backed key"'
+        capiLocation: CurrentUser\My
+        capiFriendlyName: TPM User Certificate
+        afterInstallAction: 'Write-Host "Certificate installed in CurrentUser store with TPM-backed key"'

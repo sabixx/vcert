@@ -84,7 +84,8 @@ Several playbook samples are provided in the [examples folder](./examples/playbo
 * [Playbook for CyberArk Certificate Manager, SaaS](./examples/playbook/sample.tlspc.yaml)
 * [Playbook for CyberArk Workload Identity Manager using client secret authorization](./examples/playbook/sample.firefly.client-secret.yaml)
 * [Playbook for CyberArk Workload Identity Manager using user/password authorization](./examples/playbook/sample.firefly.user-password.yaml)
-* [Playbook for TPM-backed certificates (Windows only)](./examples/playbook/sample.tpm.yaml)
+* [Playbook for TPM-backed certificates - LocalMachine store (Windows, requires admin)](./examples/playbook/sample.tpm.yaml)
+* [Playbook for TPM-backed certificates - CurrentUser store (Windows, no admin required)](./examples/playbook/sample.tpm-user.yaml)
 
 ## Playbook file structure and options
 The playbook file is a YAML file that provides access information to either CyberArk Certificate Manager, SaaS or CyberArk Certificate Manager, Self-Hosted, 
