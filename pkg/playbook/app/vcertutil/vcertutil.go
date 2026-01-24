@@ -36,6 +36,7 @@ import (
 	"github.com/Venafi/vcert/v5/pkg/endpoint"
 	"github.com/Venafi/vcert/v5/pkg/playbook/app/domain"
 	"github.com/Venafi/vcert/v5/pkg/playbook/util/capistore"
+	"github.com/Venafi/vcert/v5/pkg/playbook/util/tpmstore"
 	"github.com/Venafi/vcert/v5/pkg/util"
 	"github.com/Venafi/vcert/v5/pkg/venafi/tpp"
 	"github.com/Venafi/vcert/v5/pkg/verror"
@@ -612,4 +613,169 @@ func buildCSRTemplate(request domain.PlaybookRequest) x509.CertificateRequest {
 	template.URIs = getURIs(request.URIs)
 
 	return template
+}
+
+// EnrollCertificateWithLinuxTPM handles TPM-backed certificate enrollment for Linux PEM installations.
+// The key is generated in the TPM 2.0 chip, CSR is created and submitted to Venafi, and the
+// resulting certificate and TSS2 PEM key are returned for installation.
+//
+// Parameters:
+//   - config: The playbook configuration for connection
+//   - request: The certificate request parameters
+//   - isOptional: If true, falls back to software key generation when TPM is unavailable
+//
+// Returns:
+//   - A PEMCollection containing the certificate, TSS2 PEM private key (or regular PEM if fallback),
+//     chain, and optionally the raw TPM blob
+//   - A boolean indicating whether TPM was actually used (false if fallback occurred)
+//   - Error if enrollment fails
+func EnrollCertificateWithLinuxTPM(config domain.Config, request domain.PlaybookRequest, isOptional bool) (*certificate.PEMCollection, bool, error) {
+	zap.L().Info("initializing Linux TPM-backed certificate enrollment",
+		zap.String("commonName", request.Subject.CommonName),
+		zap.Bool("tpmOptional", isOptional))
+
+	// Try to open Linux TPM store
+	var store *tpmstore.LinuxTPMStore
+	var usingTPM bool
+	var err error
+
+	if isOptional {
+		// Use fallback function - will return nil store if TPM unavailable
+		store, usingTPM, err = tpmstore.NewLinuxTPMStoreWithFallback()
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to initialize TPM store: %w", err)
+		}
+		if !usingTPM {
+			zap.L().Info("TPM not available, falling back to software key generation (tpm_optional)")
+			// Fall back to standard enrollment
+			pcc, _, err := EnrollCertificate(config, request)
+			return pcc, false, err
+		}
+	} else {
+		// TPM is mandatory - fail if unavailable
+		store, err = tpmstore.NewLinuxTPMStore()
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to open TPM: %w (hint: ensure /dev/tpmrm0 or /dev/tpm0 exists and is accessible)", err)
+		}
+		usingTPM = true
+	}
+	defer store.Close()
+
+	// Determine key type and size
+	keyType := request.KeyType
+	if keyType == 0 {
+		keyType = certificate.KeyTypeRSA // Default to RSA
+	}
+	keySize := request.KeyLength
+	if keySize == 0 {
+		keySize = 2048 // Default RSA key size
+	}
+
+	// Generate TPM-backed key
+	tpmKey, actualKeySize, err := store.GenerateKey(keyType, keySize, request.TPMConfig.LegacyKeySize)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to generate TPM key: %w", err)
+	}
+	defer tpmKey.Close()
+
+	// Log if key size was adjusted due to legacy fallback
+	if actualKeySize != keySize {
+		zap.L().Warn("TPM key size adjusted due to tpmConfig.legacyKeySize setting",
+			zap.Int("requestedSize", keySize),
+			zap.Int("actualSize", actualKeySize))
+	}
+
+	zap.L().Info("successfully generated TPM-backed key",
+		zap.String("keyType", keyType.String()),
+		zap.Int("keySize", actualKeySize))
+
+	// Build CSR template from request
+	csrTemplate := buildCSRTemplate(request)
+
+	// Create CSR signed by TPM-backed key
+	csrDER, err := x509.CreateCertificateRequest(rand.Reader, &csrTemplate, tpmKey.Signer())
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to create CSR with TPM key: %w", err)
+	}
+
+	csrPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE REQUEST",
+		Bytes: csrDER,
+	})
+
+	zap.L().Debug("created CSR with TPM-backed key")
+
+	// Build Venafi client
+	client, err := buildClient(config, request.Zone, request.Timeout)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to build Venafi client: %w", err)
+	}
+
+	// Build the certificate request for Venafi
+	vRequest := certificate.Request{
+		CsrOrigin: certificate.UserProvidedCSR, // We're providing the CSR
+	}
+	if err := vRequest.SetCSR(csrPEM); err != nil {
+		return nil, false, fmt.Errorf("failed to set CSR: %w", err)
+	}
+
+	// Set timeout and other options
+	setTimeout(request, &vRequest)
+	vRequest.ChainOption = request.ChainOption
+	vRequest.CustomFields = request.CustomFields
+	vRequest.FriendlyName = request.FriendlyName
+
+	// Read zone configuration
+	zoneCfg, err := client.ReadZoneConfiguration()
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to read zone configuration: %w", err)
+	}
+	zap.L().Debug("successfully read zone config", zap.String("zone", request.Zone))
+
+	// Generate request with zone config
+	if err := client.GenerateRequest(zoneCfg, &vRequest); err != nil {
+		return nil, false, fmt.Errorf("failed to generate request with zone config: %w", err)
+	}
+
+	// Request certificate from Venafi
+	var pcc *certificate.PEMCollection
+	if client.SupportSynchronousRequestCertificate() {
+		pcc, err = client.SynchronousRequestCertificate(&vRequest)
+	} else {
+		reqID, reqErr := client.RequestCertificate(&vRequest)
+		if reqErr != nil {
+			return nil, false, fmt.Errorf("failed to request certificate: %w", reqErr)
+		}
+		zap.L().Debug("successfully requested certificate", zap.String("requestID", reqID))
+
+		vRequest.PickupID = reqID
+		pcc, err = client.RetrieveCertificate(&vRequest)
+	}
+
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to retrieve certificate: %w", err)
+	}
+
+	zap.L().Info("successfully retrieved certificate from Venafi",
+		zap.String("commonName", request.Subject.CommonName))
+
+	// Get TSS2 PEM format for the TPM key
+	tss2PEM, err := tpmKey.TSS2PEM()
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to encode TPM key as TSS2 PEM: %w", err)
+	}
+
+	// Build result PEMCollection with TPM-specific data
+	result := &certificate.PEMCollection{
+		Certificate: pcc.Certificate,
+		PrivateKey:  string(tss2PEM), // TSS2 PEM format instead of regular PEM
+		Chain:       pcc.Chain,
+		TpmBlob:     tpmKey.RawBlob(), // Raw blob for optional tpmBlobFile
+	}
+
+	zap.L().Info("Linux TPM certificate enrollment completed successfully",
+		zap.String("commonName", request.Subject.CommonName),
+		zap.String("keyFormat", "TSS2 PEM"))
+
+	return result, true, nil
 }

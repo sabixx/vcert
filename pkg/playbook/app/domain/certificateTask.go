@@ -85,22 +85,39 @@ func (task CertificateTask) validateTPMRequirements() error {
 		return nil
 	}
 
-	// TPM requires CAPI installation format
-	// Note: Platform check (Windows-only) happens at runtime in the enrollment flow
-	hasCAPI := false
+	// Check for incompatible formats (PKCS12/JKS) - these can NEVER work with TPM
+	// because TPM-backed private keys cannot be exported.
+	// This applies to both 'tpm' and 'tpm_optional' since the behavior would be
+	// inconsistent (TPM on one machine, software on another with same playbook).
 	for _, inst := range task.Installations {
-		if inst.Type == FormatCAPI {
-			hasCAPI = true
-			break
+		if inst.Type == FormatPKCS12 || inst.Type == FormatJKS {
+			return ErrTPMIncompatibleFormat
 		}
 	}
 
-	if !hasCAPI {
-		// For tpm_optional, this is not an error - it will fall back to local at runtime
+	// TPM requires platform-specific installation formats:
+	// - Windows: CAPI
+	// - Linux: PEM
+	// Note: Platform check happens at runtime in the enrollment flow
+	hasCAPI := false
+	hasPEM := false
+	for _, inst := range task.Installations {
+		if inst.Type == FormatCAPI {
+			hasCAPI = true
+		}
+		if inst.Type == FormatPEM {
+			hasPEM = true
+		}
+	}
+
+	hasCompatibleFormat := hasCAPI || hasPEM
+	if !hasCompatibleFormat {
+		// For tpm_optional, this is not an error - it will fall back to software at runtime
 		if csrOrigin == certificate.TPMOptionalGeneratedCSR {
 			return nil
 		}
-		return ErrTPMRequiresCAPI
+		// For mandatory tpm, we need either CAPI (Windows) or PEM (Linux)
+		return ErrTPMUnsupportedPlatform
 	}
 
 	// Validate key type - ED25519 is not supported by TPM 2.0

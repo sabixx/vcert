@@ -32,6 +32,7 @@ type PEMCollection struct {
 	PrivateKey  string   `json:",omitempty"`
 	Chain       []string `json:",omitempty"`
 	CSR         string   `json:",omitempty"`
+	TpmBlob     []byte   `json:",omitempty"` // Raw TPM key blob (Linux TPM only, for applications needing raw format)
 }
 
 // NewPEMCollection creates a PEMCollection based on the data being passed in

@@ -119,7 +119,8 @@ func (r PEMInstaller) Install(pcc certificate.PEMCollection) error {
 	preppedPK := pcc.PrivateKey
 	var err error
 	// Needs to be encrypted again using legacy PEM
-	if r.KeyPassword != "" {
+	// Note: TSS2 PEM keys (from TPM) should not be encrypted - they're already TPM-protected
+	if r.KeyPassword != "" && !strings.HasPrefix(pcc.PrivateKey, "-----BEGIN TSS2 PRIVATE KEY-----") {
 		preppedPK, err = vcertutil.EncryptPrivateKeyPKCS1(pcc.PrivateKey, r.KeyPassword)
 		if err != nil {
 			zap.L().Error("failed to encrypt PrivateKey", zap.Error(err))
@@ -141,6 +142,15 @@ func (r PEMInstaller) Install(pcc certificate.PEMCollection) error {
 			continue
 		}
 		err = util.WriteFile(resource.path, resource.content)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Write optional TPM blob file if specified and blob data is present
+	if r.TpmBlobFile != "" && len(pcc.TpmBlob) > 0 {
+		zap.L().Debug("writing TPM blob file", zap.String("location", r.TpmBlobFile))
+		err = util.WriteFile(r.TpmBlobFile, pcc.TpmBlob)
 		if err != nil {
 			return err
 		}

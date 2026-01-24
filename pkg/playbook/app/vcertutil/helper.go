@@ -228,25 +228,30 @@ func setCSR(playbookRequest domain.PlaybookRequest, vcertRequest *certificate.Re
 }
 
 // handleTPMFallback handles TPM CSR origins in the regular enrollment path.
-// TPM-backed certificates are only supported with CAPI installations on Windows,
-// which are handled by the separate executeWithTPM flow in service.go.
-// If a TPM origin reaches this function, it means there's no CAPI installation,
-// so we either fall back to software (tpm_optional) or return an error (tpm).
+// TPM-backed certificates are supported with:
+//   - CAPI installations on Windows (handled by executeWithTPM in service.go)
+//   - PEM installations on Linux (handled by executeWithLinuxTPM in service.go)
+//
+// If a TPM origin reaches this function, it means the request doesn't have a
+// compatible installation format for the current platform, so we either fall
+// back to software (tpm_optional) or return an error (tpm).
 func handleTPMFallback(vcertRequest *certificate.Request, origin certificate.CSrOriginOption) (certificate.CSrOriginOption, error) {
-	// TPM-backed certificates require CAPI installation on Windows.
-	// If we reach this point, it means the request doesn't have a CAPI installation,
+	// TPM-backed certificates require:
+	// - Windows: CAPI installation format
+	// - Linux: PEM installation format
+	// If we reach this point, it means the request doesn't have a compatible installation,
 	// so TPM cannot be used.
 
 	if origin == certificate.TPMOptionalGeneratedCSR {
 		// tpm_optional: fall back to software key generation
-		zap.L().Info("TPM requested but no CAPI installation configured - falling back to software key generation",
+		zap.L().Info("TPM requested but no compatible installation configured - falling back to software key generation",
 			zap.String("keyType", vcertRequest.KeyType.String()),
 			zap.Int("keyLength", vcertRequest.KeyLength))
 		return certificate.LocalGeneratedCSR, nil
 	}
 
-	// tpm (mandatory): return an error since TPM requires CAPI
-	return certificate.UnknownCSR, fmt.Errorf("csr: tpm requires CAPI installation format on Windows. TPM-backed private keys cannot be exported to other formats")
+	// tpm (mandatory): return an error since TPM requires compatible installation
+	return certificate.UnknownCSR, fmt.Errorf("csr: tpm requires CAPI installation on Windows or PEM installation on Linux. TPM-backed private keys cannot be exported to other formats")
 }
 
 func readCSRFromFile(fileName string) ([]byte, error) {

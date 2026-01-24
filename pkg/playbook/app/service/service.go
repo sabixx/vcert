@@ -19,6 +19,7 @@ package service
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 
 	"go.uber.org/zap"
@@ -60,10 +61,15 @@ func Execute(config domain.Config, task domain.CertificateTask) []error {
 	}
 	zap.L().Info("certificate needs action", zap.String("certificate", task.Request.Subject.CommonName))
 
-	// Check if this is a TPM enrollment with CAPI installation
+	// Check if this is a TPM enrollment with CAPI installation (Windows)
 	csrOrigin := certificate.ParseCSROrigin(task.Request.CsrOrigin)
 	if shouldUseTPMEnrollment(csrOrigin, task.Installations) {
 		return executeWithTPM(config, task)
+	}
+
+	// Check if this is a TPM enrollment with PEM installation (Linux)
+	if shouldUseLinuxTPMEnrollment(csrOrigin, task.Installations) {
+		return executeWithLinuxTPM(config, task)
 	}
 
 	// Ensure there is a keyPassword in the request when origin is service
@@ -114,17 +120,45 @@ func Execute(config domain.Config, task domain.CertificateTask) []error {
 
 }
 
-// shouldUseTPMEnrollment checks if the task should use TPM enrollment
-// TPM enrollment requires a TPM CSR origin and at least one CAPI installation
+// shouldUseTPMEnrollment checks if the task should use TPM enrollment on Windows
+// TPM enrollment requires a TPM CSR origin, at least one CAPI installation, and Windows OS
 func shouldUseTPMEnrollment(csrOrigin certificate.CSrOriginOption, installations domain.Installations) bool {
 	// Only for TPM CSR origins
 	if csrOrigin != certificate.TPMGeneratedCSR && csrOrigin != certificate.TPMOptionalGeneratedCSR {
 		return false
 	}
 
+	// Only on Windows
+	if runtime.GOOS != "windows" {
+		return false
+	}
+
 	// Check if there's a CAPI installation
 	for _, inst := range installations {
 		if inst.Type == domain.FormatCAPI {
+			return true
+		}
+	}
+
+	return false
+}
+
+// shouldUseLinuxTPMEnrollment checks if the task should use TPM enrollment on Linux
+// Linux TPM enrollment requires a TPM CSR origin, at least one PEM installation, and Linux OS
+func shouldUseLinuxTPMEnrollment(csrOrigin certificate.CSrOriginOption, installations domain.Installations) bool {
+	// Only for TPM CSR origins
+	if csrOrigin != certificate.TPMGeneratedCSR && csrOrigin != certificate.TPMOptionalGeneratedCSR {
+		return false
+	}
+
+	// Only on Linux
+	if runtime.GOOS != "linux" {
+		return false
+	}
+
+	// Check if there's a PEM installation
+	for _, inst := range installations {
+		if inst.Type == domain.FormatPEM {
 			return true
 		}
 	}
@@ -269,6 +303,62 @@ func executeWithTPM(config domain.Config, task domain.CertificateTask) []error {
 		}
 	}
 
+	return nil
+}
+
+// executeWithLinuxTPM handles certificate enrollment using TPM-backed keys for PEM installations on Linux
+func executeWithLinuxTPM(config domain.Config, task domain.CertificateTask) []error {
+	zap.L().Info("using Linux TPM-backed certificate enrollment",
+		zap.String("certificate", task.Request.Subject.CommonName))
+
+	// Determine if TPM is optional (tpm_optional allows fallback to software)
+	csrOrigin := certificate.ParseCSROrigin(task.Request.CsrOrigin)
+	isOptional := csrOrigin == certificate.TPMOptionalGeneratedCSR
+
+	// Enroll certificate with Linux TPM
+	pcc, usingTPM, err := vcertutil.EnrollCertificateWithLinuxTPM(config, task.Request, isOptional)
+	if err != nil {
+		return []error{fmt.Errorf("error enrolling certificate with Linux TPM %s: %w", task.Name, err)}
+	}
+
+	if usingTPM {
+		zap.L().Info("successfully enrolled certificate with Linux TPM-backed key",
+			zap.String("certificate", task.Request.Subject.CommonName))
+	} else {
+		zap.L().Info("enrolled certificate with software key (TPM fallback)",
+			zap.String("certificate", task.Request.Subject.CommonName))
+	}
+
+	// Install certificate on PEM locations
+	errorList := make([]error, 0)
+	for _, installation := range task.Installations {
+		if installation.Type == domain.FormatPEM {
+			e := runInstaller(installation, pcc)
+			if e != nil {
+				errorList = append(errorList, e)
+			}
+		} else {
+			// Non-PEM installations cannot use TPM-backed keys on Linux
+			zap.L().Warn("skipping non-PEM installation for Linux TPM enrollment (TPM keys cannot be exported)",
+				zap.String("format", installation.Type.String()),
+				zap.String("file", installation.File))
+		}
+	}
+
+	// Set environment variables if requested
+	if task.SetEnvVars != nil {
+		zap.L().Debug("setting environment variables for Linux TPM-backed certificate")
+		cert, err := installer.CreateCertificateFromPEM(pcc.Certificate)
+		if err != nil {
+			zap.L().Warn("failed to create certificate struct for environment variables", zap.Error(err))
+		} else {
+			setEnvVars(task, cert, pcc)
+		}
+	}
+
+	if len(errorList) > 0 {
+		return errorList
+	}
 	return nil
 }
 

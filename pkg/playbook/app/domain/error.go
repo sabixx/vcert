@@ -93,12 +93,16 @@ var (
 
 	// TPM-related errors
 
-	// ErrTPMRequiresCAPI is thrown when TPM CSR origin is used without CAPI installation
-	ErrTPMRequiresCAPI = fmt.Errorf("csr: tpm requires CAPI installation format on Windows. TPM-backed private keys cannot be exported to PEM, PKCS12, or JKS formats")
+	// ErrTPMRequiresCAPI is thrown when TPM CSR origin is used on Windows without CAPI installation
+	ErrTPMRequiresCAPI = fmt.Errorf("csr: tpm on Windows requires CAPI installation format")
+	// ErrTPMRequiresPEM is thrown when TPM CSR origin is used on Linux without PEM installation
+	ErrTPMRequiresPEM = fmt.Errorf("csr: tpm on Linux requires PEM installation format")
+	// ErrTPMIncompatibleFormat is thrown when TPM is used with PKCS12 or JKS installations
+	ErrTPMIncompatibleFormat = fmt.Errorf("csr: tpm cannot be used with PKCS12 or JKS installation formats. TPM-backed private keys cannot be exported")
 	// ErrTPMUnavailable is thrown when TPM is required but not available on the system
-	ErrTPMUnavailable = fmt.Errorf("TPM 2.0 device not available on this system")
+	ErrTPMUnavailable = fmt.Errorf("csr: tpm requires TPM 2.0 but no TPM device is available on this system")
 	// ErrTPMUnsupportedPlatform is thrown when TPM CSR origin is specified on an unsupported platform
-	ErrTPMUnsupportedPlatform = fmt.Errorf("TPM-backed certificates are only supported on Windows with CAPI installation")
+	ErrTPMUnsupportedPlatform = fmt.Errorf("TPM-backed certificates are only supported on Windows (CAPI) and Linux (PEM)")
 	// ErrTPMKeyTypeNotSupported is thrown when an unsupported key type is requested for TPM
 	ErrTPMKeyTypeNotSupported = fmt.Errorf("TPM does not support the requested key type. ED25519 is not supported by TPM 2.0")
 	// ErrTPMKeySizeNotSupported is thrown when an unsupported key size is requested for TPM

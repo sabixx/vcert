@@ -268,3 +268,23 @@ func CreateCertificateFromX509(x509Cert *x509.Certificate) (*Certificate, error)
 	cert := Certificate{*x509Cert, hexThumbprint}
 	return &cert, nil
 }
+
+// CreateCertificateFromPEM creates a Certificate struct from a PEM-encoded certificate string
+// This is for Linux TPM-backed certificates where we have the certificate as PEM
+func CreateCertificateFromPEM(certPEM string) (*Certificate, error) {
+	if certPEM == "" {
+		return nil, fmt.Errorf("certificate PEM cannot be empty")
+	}
+
+	x509Cert, err := parsePEMCertificate([]byte(certPEM))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse PEM certificate: %w", err)
+	}
+
+	// nolint:gosec // Required for certificate thumbprint calculation (same as CreateX509Cert)
+	thumbprint := sha1.Sum(x509Cert.Raw)
+	hexThumbprint := hex.EncodeToString(thumbprint[:])
+
+	cert := Certificate{*x509Cert, hexThumbprint}
+	return &cert, nil
+}

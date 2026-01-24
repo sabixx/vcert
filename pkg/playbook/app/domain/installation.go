@@ -50,6 +50,7 @@ type Installation struct {
 	JKSPassword         string `yaml:"jksPassword,omitempty"`
 	KeyFile             string `yaml:"keyFile,omitempty"`
 	KeyPassword         string `yaml:"keyPassword,omitempty"`
+	TpmBlobFile         string `yaml:"tpmBlobFile,omitempty"` // Optional: path to store raw TPM key blob (Linux only)
 	// Deprecated: Location is deprecated in favor of CAPILocation. It will be removed on a future release
 	Location     string             `yaml:"location,omitempty"`
 	P12Password  string             `yaml:"p12Password,omitempty"`
